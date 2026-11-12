@@ -1,0 +1,141 @@
+name: WorkBuddy Cat Travel
+
+# 🚨 部署前必读：免费个人账号下，**私有仓库的 schedule 事件不会触发**（官方文档未记载）。
+#    本仓库必须是 public（或账号有 GitHub Pro），否则下面这些 cron 一次都不会跑。
+#    详见 SKILL.md 的「🚨 头号坑」。
+
+on:
+  schedule:
+    # GitHub Actions 的 cron 使用 UTC，北京时间 = UTC + 8
+    # 对应北京时间 08:15 / 12:30 / 16:45 / 21:00
+    # 旅行耗时 1~4 小时，单点定时覆盖不全，用多点巡检推进状态：
+    #   08:15 派出 → 若 1 小时就归来，12:30 领取；4 小时的最迟 16:45 前也已被领取
+    #   21:00 兜底（含当日额度耗尽后的归位）
+    - cron: '15 0 * * *'
+    - cron: '30 4 * * *'
+    - cron: '45 8 * * *'
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只查状态，不做任何写操作（不派出、不领取）'
+        type: boolean
+        default: false
+      location:
+        description: '指定地点：1咖啡馆 2商场店铺 3健身房 4古镇客栈，0=随机'
+        type: string
+        default: '0'
+      force_notify:
+        description: '强制推送一条通知（即使本次是"跳过"也推；标题带「（测试）」前缀，用于验证推送配置）'
+        type: boolean
+        default: false
+
+# contents: write 供「每日运行戳」步骤提交使用（证明定时触发确实发生了）
+permissions:
+  contents: write
+
+# 与签到任务相互独立，各自加锁即可
+concurrency:
+  group: workbuddy-travel
+  cancel-in-progress: false
+
+jobs:
+  travel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Run cat travel
+        env:
+          # 与签到共用同一个令牌，推送渠道与密钥也要与 checkin.yml 保持一致
+          WB_TOKEN: ${{ secrets.WB_TOKEN }}
+          # 与签到走同一个域名。曾经这里不设、脚本里硬编码 www.workbuddy.cn，导致 CI 侧
+          # 只有旅行被网关拒绝（签到走 www.codebuddy.cn 一直正常），排查时极易误判成令牌失效。
+          WB_DOMAIN: www.codebuddy.cn
+          # 渠道见 checkin.yml 的说明（微信 Server 酱 + PUSH_LEVEL=action）
+          NOTIFY_CHANNEL: serverchan
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          # 推送级别：action = 只在派出成功 / 领取成功 / 出错时推（默认，每天 ≤2 条）
+          #           all    = 每次巡检都推（含「旅行中」这类无动作结果，每天 4 条）
+          #           off    = 本仓不推送（什么都不推，也不产生告警注解）
+          # 关掉推送：本行改为 off，并顺手删掉上面的密钥行
+          PUSH_LEVEL: action
+          # 用 github.event.inputs 而非 inputs：inputs 上下文仅在 workflow_dispatch /
+          # workflow_call 可用，定时(schedule)触发时其值为 null 且 inputs 段的 default 不生效。
+          # github.event.inputs 在所有事件下都存在（非手动触发时为空），配合下方 shell 默认值最稳。
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          LOCATION: ${{ github.event.inputs.location }}
+          # 手动触发时勾选 force_notify=true，强制推一条（本次是"跳过"也推），
+          # 标题带「（测试）」前缀 —— 这是旅行侧唯一的推送验证入口。
+          FORCE_NOTIFY: ${{ github.event.inputs.force_notify }}
+        id: run_travel
+        run: |
+          set -e
+          ARGS=""
+          if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          if [ -n "$LOCATION" ] && [ "$LOCATION" != "0" ]; then ARGS="$ARGS --location $LOCATION"; fi
+          echo "python travel.py $ARGS"
+          # 输出落盘，供下一步的运行戳提取本次 action；最后以脚本自身的退出码结束本步骤。
+          python travel.py $ARGS > "$RUNNER_TEMP/wb-travel.log" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/wb-travel.log"
+          ACTION="$(sed -n 's/.*"action": *"\([^"]*\)".*/\1/p' "$RUNNER_TEMP/wb-travel.log" | head -1)"
+          echo "action=${ACTION:-unknown}" >> "$GITHUB_OUTPUT"
+          exit ${rc:-0}
+
+      # 每日「运行戳」：把当天「第一笔运行」和当天出现过的实质动作记录进一个文件并提交。
+      #
+      # 为什么需要它：积分到账在仓库里看不见，本自动化又没有别的远端副作用，
+      # 于是「今天到底跑没跑、被谁触发、结果是什么」从外部无从判断。这个文件就是
+      # **不需要任何 API 就能读的账本**：
+      #   有今天的戳   = 今天确实跑过
+      #   event=...    = 触发来源（schedule = GitHub 原生定时；workflow_dispatch = 外部定时器或手动）
+      #   action=...   = 本次结果（claimed / departed = 有实质动作；skip_* = 空跑；none / error = 异常）
+      #
+      # 门控规则：
+      #   当天还没有戳                                → 写入（哪怕空跑或出错，先留下「跑过」的证据）
+      #   当天已有戳 + 本次是实质动作且与已记录的不同 → 覆盖（travel 当天会先 departed 后 claimed，各记一笔）
+      #   其余情况                                    → 保持原样
+      #
+      # 与旧版的区别：旧版是「schedule 覆盖一切」，目的是证明原生定时跑了；但主触发源改为
+      # 外部定时器后（走 workflow_dispatch），旧规则会把 00:05 的领取记录覆盖成 09:xx 的空跑，
+      # 反而掩盖真相。两个 workflow 仍各用独立文件，避免互相挡住。
+      #
+      # 注意：schedule / workflow_dispatch 触发时 actions/checkout 处于 detached HEAD，
+      # 裸 `git push` 会报 "You are not currently on a branch" 而静默失败
+      # （本步骤是 continue-on-error，不会让 job 变红），所以必须显式写 HEAD:main。
+      - name: Daily run stamp (event + action ledger)
+        # if: always() —— 脚本报错时也要留下「今天跑过、结果是 error」的记录，
+        # 否则出错日反而毫无痕迹（旧版正是如此）。
+        if: always()
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+          ACTION: ${{ steps.run_travel.outputs.action }}
+        run: |
+          set -e
+          mkdir -p .keepalive
+          STAMP=".keepalive/last-run-travel.txt"
+          TODAY="$(date +%Y-%m-%d)"
+          if [ -f "$STAMP" ] && [ "$(cut -d' ' -f1 "$STAMP")" = "$TODAY" ]; then
+            case "${ACTION}" in
+              claimed|departed)
+                if grep -q "action=${ACTION}" "$STAMP"; then
+                  echo "already recorded action=${ACTION} today:"; cat "$STAMP"; exit 0
+                fi
+                ;;
+              *)
+                echo "no new meaningful action (action=${ACTION}); keep:"; cat "$STAMP"; exit 0
+                ;;
+            esac
+          fi
+          echo "$(date '+%Y-%m-%d %H:%M:%S %z') travel event=${GITHUB_EVENT_NAME} action=${ACTION:-unknown}" > "$STAMP"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$STAMP"
+          git commit -m "chore: daily run stamp ${TODAY} (travel)"
+          git push origin HEAD:main

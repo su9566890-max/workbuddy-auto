@@ -1,0 +1,54 @@
+name: WorkBuddy Token Expiry Watch
+
+# 兜底哨兵。本机有一个「每 14 天」的 WorkBuddy 自动化负责自动刷新 Secret
+# （见 skill `workbuddy-secret-refresh`），但它依赖「到点那台电脑开着、客户端在跑」。
+# 本工作流不依赖任何本机资源：只读 Secret 里那把令牌的 exp，快到期就推微信喊你手动刷。
+#
+# 它不做任何写操作（permissions 仅 contents: read），也不碰仓库文件。
+
+on:
+  schedule:
+    # 每周一 11:00（北京）= 03:00 UTC。
+    # 刻意避开 checkin 的 01/04/07/10/13 点整，免得抢同一分钟的并发。
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      force_notify:
+        description: '强制推送一条通知（用于验证 SERVERCHAN_KEY 配置是否正确）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workbuddy-token-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      # 用 github.event.inputs 而非 inputs：inputs 上下文仅在 workflow_dispatch /
+      # workflow_call 可用，schedule 触发时为 null 且 inputs 段的 default 不生效，
+      # 而 schedule 恰恰是本任务的主要运行方式。（与 checkin.yml 同一处理）
+      - name: Check WB_TOKEN expiry
+        env:
+          WB_TOKEN: ${{ secrets.WB_TOKEN }}
+          # 距到期不足这个天数就推提醒。设 7 天：即便本机 14 天自动化整体失效，
+          # 也还有一周的处置窗口。
+          TOKEN_WARN_DAYS: '7'
+          # 推送渠道与密钥沿用 checkin.yml（微信 Server 酱）
+          NOTIFY_CHANNEL: serverchan
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          # action = 只在 expired / soon 时推（正常周一完全静默，不打扰）
+          PUSH_LEVEL: action
+          FORCE_NOTIFY: ${{ github.event.inputs.force_notify }}
+        run: python token_watch.py
