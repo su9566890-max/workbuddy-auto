@@ -1,0 +1,1 @@
+2026-11-13 14:45:27 +0800 travel event=schedule action=claimed
