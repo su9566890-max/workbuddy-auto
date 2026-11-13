@@ -1,0 +1,47 @@
+name: WorkBuddy Growth (full)
+
+# 成长中心全套：领旅行礼物 → 接单/领任务奖 → 补登 → 连登兑换
+# → 开盲盒 → 能量开 Buddy → 派出旅行。每 4 小时巡检一次（北京时间）。
+# 写操作一律不重试；每步先查状态，未满足就跳过；空跑不推送。
+# 来源：88lin/workbuddy-auto-signin 的 run_growth 逻辑（MIT），云端改写版。
+
+on:
+  schedule:
+    # GitHub Actions 的 cron 使用 UTC，北京时间 = UTC + 8
+    # 以下 6 个时点对应北京时间 00:30 / 04:30 / 08:30 / 12:30 / 16:30 / 20:30
+    - cron: '30 16,20,0,4,8,12 * * *'
+  workflow_dispatch:
+    inputs:
+      force_notify:
+        description: '强制推送一条通知（用于验证 SERVERCHAN_KEY 配置是否正确）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workbuddy-growth
+  cancel-in-progress: false
+
+jobs:
+  growth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Run WorkBuddy growth (full)
+        env:
+          WB_TOKEN: ${{ secrets.WB_TOKEN }}
+          WB_DOMAIN: www.codebuddy.cn
+          NOTIFY_CHANNEL: serverchan
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          PUSH_LEVEL: action
+          FORCE_NOTIFY: ${{ github.event.inputs.force_notify }}
+        run: |
+          python3 growth.py
