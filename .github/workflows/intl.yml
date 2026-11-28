@@ -3,7 +3,7 @@ name: WorkBuddy Intl Daily
 on:
   schedule:
     # 每天 09:15 北京时间（GitHub cron 用 UTC，北京时间 = UTC+8）
-    - cron: "15 1 * * *"
+    - cron: "15 1 * * *" # Runs at 01:15
   workflow_dispatch: # 支持手动触发
 
 permissions:
@@ -15,19 +15,16 @@ jobs:
     timeout-minutes: 60
     env:
       TZ: Asia/Shanghai
-      NO_NOTIFY: "1"
+      SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
       WORKBUDDY_INTL_TOKENS: ${{ secrets.WORKBUDDY_INTL_TOKENS }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install deps
         run: pip install requests
-
       - name: Run WorkBuddy Intl daily
         run: python workbuddy_intl_daily.py
