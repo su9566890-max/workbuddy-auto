@@ -2008,6 +2008,18 @@ def notify(text, title="WorkBuddy AI 每日活跃与等级任务"):
                           json={"token": token, "title": title, "content": raw, "template": "txt"}, timeout=15)
         except Exception as error:
             log("⚠️ PushPlus 推送失败: %s" % error)
+    # 2026-11-28 补丁：加 Server 酱（与国内版同一个微信提醒）。
+    # 上游只支持企业微信 / PushPlus；SERVERCHAN_KEY 复用仓库已有的 Secret。
+    sckey = os.getenv("SERVERCHAN_KEY", "").strip()
+    if sckey:
+        try:
+            resp = requests.post("https://sctapi.ftqq.com/%s.send" % sckey,
+                                 data={"title": title, "desp": raw}, timeout=15)
+            body = resp.json()
+            if body.get("code") != 0:
+                log("⚠️ Server 酱推送失败: code=%s msg=%s" % (body.get("code"), body.get("message")))
+        except Exception as error:
+            log("⚠️ Server 酱推送失败: %s" % error)
 
 
 def main():
