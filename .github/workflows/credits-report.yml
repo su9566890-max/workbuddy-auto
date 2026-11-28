@@ -1,0 +1,20 @@
+name: WorkBuddy Credits Report
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run credits report (intl)
+        run: python3 credits_report.py --intl "${{ secrets.WORKBUDDY_INTL_TOKENS }}"
